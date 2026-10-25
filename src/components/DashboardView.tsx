@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
-import { Deployment, DeploymentStatus } from "@/lib/db";
+import { Deployment, DeploymentStatus, ComputeTier } from "@/lib/db";
 import { SessionUser } from "./AuthView";
 import DeploymentModal from "./DeploymentModal";
 import InspectorDrawer from "./InspectorDrawer";
@@ -51,6 +51,29 @@ export default function DashboardView({
   const [copiedKey, setCopiedKey] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [trendingModels, setTrendingModels] = useState<
+    Array<{
+      id: string;
+      downloads: number;
+      likes: number;
+      recommendedCompute: ComputeTier;
+    }>
+  >([]);
+
+  React.useEffect(() => {
+    let active = true;
+    fetch("/api/hf-models?limit=4")
+      .then((r) => r.json())
+      .then((data) => {
+        if (active && data.models) {
+          setTrendingModels(data.models.slice(0, 4));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -432,6 +455,69 @@ export default function DashboardView({
             </div>
           </div>
         </div>
+
+        {/* Live Hugging Face Public API Feed Strip */}
+        {trendingModels.length > 0 && (
+          <div className="specular-card rounded-xl p-4 bg-[#09090C]/90">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                <span className="text-xs font-mono font-semibold text-white uppercase tracking-wider">
+                  Live Hugging Face Hub API // Trending Open-Weights
+                </span>
+                <span className="text-[10px] font-mono text-zinc-400 bg-white/[0.04] border border-white/[0.08] px-2 py-0.5 rounded">
+                  GET https://huggingface.co/api/models
+                </span>
+              </div>
+              <span className="text-[11px] font-mono text-zinc-500">
+                Click any model to 1-click deploy to SQLite fleet
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+              {trendingModels.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => {
+                    const shortSlug = (m.id.split("/").pop() || "model")
+                      .toLowerCase()
+                      .replace(/[^a-z0-9]+/g, "-")
+                      .replace(/(^-|-$)/g, "");
+                    setEditingDep(null);
+                    handleCreateOrUpdate({
+                      name: `${shortSlug}-edge`,
+                      model: m.id,
+                      compute: m.recommendedCompute || "H100-80GB",
+                      region: "iad-1",
+                      status: "LIVE",
+                      replicas: 2,
+                      maxBatchSize: 256,
+                      quantization: "FP8",
+                      envVars: [
+                        { key: "HF_HUB_ENABLE_HF_TRANSFER", value: "1" },
+                        { key: "VLLM_ATTENTION_BACKEND", value: "FLASHINFER" },
+                      ],
+                    });
+                  }}
+                  className="p-3 rounded-lg bg-black/70 border border-white/[0.07] hover:border-white/25 text-left transition group flex flex-col justify-between"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-xs font-semibold text-zinc-100 group-hover:text-emerald-300 truncate">
+                      {m.id}
+                    </span>
+                    <ArrowUpRight className="w-3.5 h-3.5 text-zinc-500 group-hover:text-white shrink-0" />
+                  </div>
+                  <div className="mt-2 flex items-center justify-between text-[10px] font-mono text-zinc-400">
+                    <span>{(m.downloads / 1000).toFixed(0)}k pulls</span>
+                    <span className="px-1.5 py-0.5 rounded bg-white/[0.04] text-sky-300 border border-white/[0.06]">
+                      {m.recommendedCompute}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Filter & Search Command Bar */}
         <div className="specular-card rounded-xl p-3 bg-[#09090C]/90 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">

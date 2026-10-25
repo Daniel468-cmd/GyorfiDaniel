@@ -8,6 +8,7 @@ import {
   DeploymentStatus,
   EnvVar,
 } from "@/lib/db";
+import { HuggingFaceModelResult } from "@/app/api/hf-models/route";
 import {
   X,
   Cpu,
@@ -19,6 +20,10 @@ import {
   DollarSign,
   Zap,
   Check,
+  Search,
+  Download,
+  Heart,
+  RefreshCw,
 } from "lucide-react";
 
 interface DeploymentModalProps {
@@ -126,6 +131,12 @@ export default function DeploymentModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Public Hugging Face API Search state
+  const [hfQuery, setHfQuery] = useState("");
+  const [hfResults, setHfResults] = useState<HuggingFaceModelResult[]>([]);
+  const [hfLoading, setHfLoading] = useState(false);
+  const [hfSource, setHfSource] = useState<string>("huggingface-live-api");
+
   useEffect(() => {
     if (initialData) {
       setName(initialData.name);
@@ -158,11 +169,53 @@ export default function DeploymentModal({
     setError(null);
   }, [initialData, isOpen]);
 
+  // Fetch live models from Hugging Face Hub API when modal opens or query changes
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setHfLoading(true);
+      try {
+        const res = await fetch(
+          `/api/hf-models?q=${encodeURIComponent(hfQuery)}&limit=6`
+        );
+        if (res.ok && !cancelled) {
+          const data = await res.json();
+          setHfResults(data.models || []);
+          setHfSource(data.source || "huggingface-live-api");
+        }
+      } catch {
+        // ignore
+      } finally {
+        if (!cancelled) setHfLoading(false);
+      }
+    }, 260);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [hfQuery, isOpen]);
+
   if (!isOpen) return null;
 
   const selectedTier = COMPUTE_TIERS.find((t) => t.id === compute) || COMPUTE_TIERS[1];
   const estimatedHourly =
     status === "HIBERNATED" ? 0 : (selectedTier.pricePerHr * replicas).toFixed(2);
+
+  const handleSelectHfModel = (item: HuggingFaceModelResult) => {
+    setModel(item.id);
+    setCompute(item.recommendedCompute);
+    setQuantization(item.suggestedQuantization);
+    if (!initialData) {
+      const shortName = item.id.split("/").pop() || item.id;
+      const cleanSlug = shortName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "");
+      setName(`${cleanSlug}-prod`);
+    }
+  };
 
   const handleAddEnv = () => {
     setEnvVars([...envVars, { key: "", value: "" }]);
@@ -209,7 +262,7 @@ export default function DeploymentModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
-      <div className="specular-card w-full max-w-2xl rounded-2xl bg-[#09090C] border border-white/[0.12] overflow-hidden shadow-2xl max-h-[90vh] flex flex-col">
+      <div className="specular-card w-full max-w-2xl rounded-2xl bg-[#09090C] border border-white/[0.12] overflow-hidden shadow-2xl max-h-[92vh] flex flex-col">
         {/* Header */}
         <div className="px-6 py-4 border-b border-white/[0.08] flex items-center justify-between bg-white/[0.02]">
           <div className="flex items-center gap-2.5">
@@ -223,7 +276,7 @@ export default function DeploymentModal({
                   : "Provision Serverless GPU Endpoint"}
               </h3>
               <p className="text-[11px] text-zinc-400 font-mono">
-                Zero-downtime atomic rollout across NVLink mesh
+                Backed by SQLite WAL persistence & live Hugging Face Hub API discovery
               </p>
             </div>
           </div>
@@ -244,16 +297,88 @@ export default function DeploymentModal({
             </div>
           )}
 
-          {/* Quick Model Presets */}
+          {/* LIVE HUGGING FACE HUB PUBLIC API EXPLORER */}
+          <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.09] space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                <span className="text-xs font-mono font-semibold text-white uppercase tracking-wider">
+                  Hugging Face Hub Live Model Registry
+                </span>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                {hfLoading && <RefreshCw className="w-2.5 h-2.5 animate-spin" />}
+                {hfSource === "huggingface-live-api"
+                  ? "PUBLIC API CONNECTED"
+                  : "CACHED CATALOG"}
+              </span>
+            </div>
+
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={hfQuery}
+                onChange={(e) => setHfQuery(e.target.value)}
+                placeholder="Query live Hugging Face Hub API (e.g. mistral, llama-3, qwen, deepseek, phi-4)..."
+                className="w-full bg-black border border-white/[0.1] focus:border-white/35 rounded-lg pl-9 pr-3 py-1.5 text-xs font-mono text-white placeholder:text-zinc-600 focus:outline-none"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
+              {hfResults.map((item) => {
+                const isSelected = model === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleSelectHfModel(item)}
+                    className={`p-2.5 rounded-lg border text-left transition flex flex-col justify-between ${
+                      isSelected
+                        ? "bg-white text-black border-white"
+                        : "bg-black/70 border-white/[0.07] hover:border-white/25 text-zinc-200"
+                    }`}
+                  >
+                    <div className="font-mono text-[11px] font-semibold truncate">
+                      {item.id}
+                    </div>
+                    <div
+                      className={`mt-1.5 flex items-center justify-between text-[10px] font-mono ${
+                        isSelected ? "text-zinc-700" : "text-zinc-500"
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <span className="inline-flex items-center gap-0.5">
+                          <Download className="w-2.5 h-2.5" />
+                          {(item.downloads / 1000).toFixed(0)}k
+                        </span>
+                        <span className="inline-flex items-center gap-0.5">
+                          <Heart className="w-2.5 h-2.5" />
+                          {item.likes}
+                        </span>
+                      </span>
+                      <span
+                        className={`px-1.5 py-0.2 rounded ${
+                          isSelected
+                            ? "bg-black/10 text-black font-semibold"
+                            : "bg-white/[0.05] text-zinc-400"
+                        }`}
+                      >
+                        {item.recommendedCompute}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Quick Curated Blueprints */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Quick Frontier Model Blueprints</span>
+              <label className="text-[11px] font-mono uppercase tracking-wider text-zinc-400">
+                Or Pick Verified Production Blueprint
               </label>
-              <span className="text-[11px] text-zinc-500 font-mono">
-                1-Click Populate
-              </span>
             </div>
             <div className="flex flex-wrap gap-1.5">
               {PRESET_MODELS.map((preset) => {
@@ -272,7 +397,7 @@ export default function DeploymentModal({
                         setName(`${slugBase}-prod`);
                       }
                     }}
-                    className={`px-2.5 py-1.5 rounded-md text-xs font-mono transition border ${
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-mono transition border ${
                       active
                         ? "bg-white text-black border-white font-medium"
                         : "bg-white/[0.03] text-zinc-300 border-white/[0.08] hover:border-white/25"
@@ -495,7 +620,7 @@ export default function DeploymentModal({
                     value={ev.value}
                     onChange={(e) => handleEnvChange(i, "value", e.target.value)}
                     placeholder="VALUE"
-                    className=" flex-1 bg-black border border-white/[0.08] rounded-lg px-3 py-1.5 text-xs font-mono text-emerald-400 focus:outline-none focus:border-white/30"
+                    className="flex-1 bg-black border border-white/[0.08] rounded-lg px-3 py-1.5 text-xs font-mono text-emerald-400 focus:outline-none focus:border-white/30"
                   />
                   <button
                     type="button"
@@ -541,7 +666,7 @@ export default function DeploymentModal({
                 <Check className="w-3.5 h-3.5" />
                 <span>
                   {saving
-                    ? "Syncing Shards..."
+                    ? "Writing to SQLite..."
                     : initialData
                     ? "Apply Configuration"
                     : "Deploy Endpoint"}
